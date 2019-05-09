@@ -1,0 +1,402 @@
+---
+title: "Data Science Final Project Code"
+author: "Richard Holt"
+date: "5/9/2019"
+output: pdf_document: default
+---
+Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(quantmod)
+library(dplyr)
+library(tidyverse)
+library(rvest)
+library(ggplot2)
+library(lattice)
+library(fpp2)
+library(nloptr)
+library(mlr)
+library(magrittr)
+library(gdata)
+library(bazar)
+library(NLP)
+library(janitor)
+library(DataCombine)
+library(plyr)
+library(stargazer)
+```
+Functions
+```{r echo=FALSE}
+## This function is designed to take dataframes that are factor variables and create numeric data frames
+numberFunc <- function(x){
+  for(i in 2:length(x)){
+  x[,i] <- as.numeric(levels(x[,i]))[x[,i]]
+  }
+  return(x)
+}
+
+## This function is designed to take character data and create a numeric data frame adding columns for the change and the rate
+dataFunc <- function(x){
+  y <- as.numeric(x)
+  y <- as.data.frame(y)
+  y$change <- NA
+  y$rate <- NA
+  for(i in 2:length(x)){
+    y$change[i] <- y[i,1]-y[i-1,1]
+  }
+  for(i in 2:length(x)){
+    y$rate[i] <- y$change[i]/y[i,1]
+  }
+  return(y)
+}
+
+## This function is designed to take the state migration data and clean and organize the first 5 years of it
+StateDataFunc <- function(z){
+  for(x in 2005:2007){
+  y <- read.xls(as.String(concat(as.character(x),".xls",sep = "")),skip=5,stringsAsFactors=FALSE)
+  for(i in 1:62){
+    drops <- c(drops,as.String(concat("X.",as.character(i),sep = "")))
+  }
+  y <- y[ , !(names(y) %in% drops)]
+  y <- y[-c(32,33,34,57,58,59),]
+  z <- data.frame(z,y)
+  }
+  for(x in 2008:2009){
+  y <- read.xls(as.String(concat(as.character(x),".xls",sep = "")),skip=5,stringsAsFactors=FALSE)
+  for(i in 1:62){
+    drops <- c(drops,as.String(concat("X.",as.character(i),sep = "")))
+  }
+  y <- y[ , !(names(y) %in% drops)]
+  y <- y[-c(32,33,34,57,58,59,60),]
+  z <- data.frame(z,y)
+  }
+  z <- z[,order(names(z))]
+  return(z)
+}
+```
+Data
+```{r echo=FALSE}
+## This code reads in the data regarding the national migration rates and cleans the data
+data <- read.csv('migration.csv',skip=4)
+data$Mobility.period <- data$Mobility.period %>%
+  str_sub(0,4) %>%
+  as.integer()
+data <- data %>%
+  filter(is.na(Mobility.period)==FALSE)
+drops <- c("X.4","X.5","X.6")
+data <- data[ , !(names(data) %in% drops)]
+colnames(data) <- c("Year","Total","Non-Movers","Movers","USMigrants","SameCountry","DifferentCountry","SameState","DifferentState","Abroad")
+data$Total <- as.character(data$Total)
+x <- nrow(data)-11
+for (i in 1:x) {
+  while(data$Year[i+1]==data$Year[i]){
+    data <- data[-i,]
+    x<-x-1
+  }
+}
+
+## This code makes the migration data more organized for the purposes of final selection
+Mpercent <- subset(data,data$Total==" 100.0 ")
+Maggregate <- subset(data,data$Total !=" 100.0 ")
+Mpercent$Year <- as.numeric(Mpercent$Year)
+Mpercent$Total <- as.numeric(Mpercent$Total)
+Mpercent <- numberFunc(Mpercent)
+
+## This code reads in the data regarding the specific reasons for migration at the national level and cleans the data
+data <- read.csv('specific.csv',skip=4)
+data$Mobility.Period <- data$Mobility.Period %>%
+  str_sub(0,4) %>%
+  as.integer()
+data <- data %>%
+  filter(is.na(Mobility.Period)==FALSE)
+drops <- c("Mobility.Period.1","X.15","X.16","X.17","X.18")
+data <- data[ , !(names(data) %in% drops)]
+colnames(data) <- c("Year","Total","Marital","Household","OtherFamily","NewJob","LookWork","Convenient","Retired","OtherJob","OwnHome","NewHome","BetterHome","CheapHome","Eviction","OtherHome","College","Climate","Health","Disaster","Other")
+data$Total <- as.character(data$Total)
+x <- nrow(data)-5
+for (i in 1:x) {
+  while(data$Year[i+1]==data$Year[i]){
+    data <- data[-i,]
+    x<-x-1
+  }
+}
+
+## This code makes the specific migration data more organized for the purposes of final selection
+Spercent <- subset(data,data$Total=="100.0")
+Saggregate <- subset(data,data$Total !="100.0")
+Spercent$Year <- as.numeric(Spercent$Year)
+Spercent$Total <- as.numeric(Spercent$Total)
+Spercent <- numberFunc(Spercent)
+
+## This code reads in and cleans the state and national level GDP rate data
+getSymbols(c("GDPC1","A191RL1A225NBEA","TXNGSP","NYNGSP","OHNGSP","VTNGSP","FLNGSP","CANGSP","WYNGSP","OKNGSP"),from="1948-01-01",src="FRED")
+gdp <- dataFunc(GDPC1)
+gdpr <- as.data.frame(as.numeric(A191RL1A225NBEA))
+colnames(gdpr) <- "rate"
+rownames(gdpr) <- seq(1930,2018,1)
+txgdp <- dataFunc(TXNGSP)
+nygdp <- dataFunc(NYNGSP)
+ohgdp <- dataFunc(OHNGSP)
+vtgdp <- dataFunc(VTNGSP)
+flgdp <- dataFunc(FLNGSP)
+cagdp <- dataFunc(CANGSP)
+wygdp <- dataFunc(WYNGSP)
+okgdp <- dataFunc(OKNGSP)
+rownames(gdp) <- seq(1948,2020,0.25)
+
+## This code further consolidates the national migration rate data and national specific migration information data based on the dimensions of the GDP data
+attach(Mpercent)
+newdataM <- gdpr$rate[26:88]
+FinalDataM <- data.frame(Year=Year,DifferentCountry=DifferentCountry,DifferentState=DifferentState,PercentMovers=Movers)
+FinalDataM <- FinalDataM[seq(dim(FinalDataM)[1],1),]
+FinalDataM <- data.frame(FinalDataM,GDPRate=newdataM)
+detach(Mpercent)
+attach(Spercent)
+newdataS <- gdpr$rate[69:88]
+FinalDataS <- data.frame(Year=Year,Work=as.numeric(Spercent$LookWork),NewJob=Spercent$NewJob)
+FinalDataS <- FinalDataS[seq(dim(FinalDataS)[1],1),]
+FinalDataS <- data.frame(FinalDataS,GDPRate=newdataS)
+detach(Spercent)
+
+## This code finalizes a dataframe with the state-level GDP data for the selected states 
+StateGDPData <- data.frame(Year=Mpercent$Year[21:1],TX=txgdp$rate,VT=vtgdp$rate,OH=ohgdp$rate,CA=cagdp$rate,NY=nygdp$rate,FL=flgdp$rate,WY=wygdp$rate,OK=okgdp$rate)
+
+# This code reads in and creates the dataframe containing the state level migration data
+ohfive <- read.xls("2005.xls",skip=6,stringsAsFactors=FALSE)
+ohfive <- ohfive[-c(31,32,33,56,57,58),]
+StateMigrationData <- data.frame(NA)
+StateMigrationData <- StateDataFunc(StateMigrationData) %>%
+  as_tibble() %>%
+  slice(-1) %>%
+  mutate_at(vars(1:261),~gsub(",","",.)) %>%
+  mutate_at(vars(1:261),as.numeric)
+StateMigrationData <- StateMigrationData[,-c(136,262:266)]
+rownames(StateMigrationData) <- ohfive[,1]
+f<-1
+for(i in 1:length(StateMigrationData$Alabama)){
+  for(l in f:(f+4)){
+    StateMigrationData[i,l] <- NA
+  }
+  f <- f+5
+}
+StateMigrationData <- InsertRow(StateMigrationData,c(1:length(StateMigrationData)))
+rownames(StateMigrationData)[53] <- "Total"
+StateMigrationData[53,] <- apply(StateMigrationData,2,sum,na.rm=TRUE)
+```
+Final Working Data
+```{r echo=FALSE}
+## This code creates the final working data for the model analyses (SGD = State GDP Data, SMD = State Migration Data, ND = National Data)
+SGD <- StateGDPData[10:13,]
+rownames(SGD) <- SGD[,1]
+SGD <- SGD[,-1]*100
+SMD <- StateMigrationData["Total",c("Texas","Vermont","Ohio","California","New.York","Florida","Wyoming","Oklahoma")]
+n <- as.data.frame(StateMigrationData["Total",c("Texas.1","Vermont.1","Ohio.1","California.1","New.York.1","Florida.1","Wyoming.1","Oklahoma.1")])
+colnames(n) <- colnames(SMD)
+SMD <- InsertRow(SMD,n[1,])
+m <- as.data.frame(StateMigrationData["Total",c("Texas.2","Vermont.2","Ohio.2","California.2","New.York.2","Florida.2","Wyoming.2","Oklahoma.2")])
+colnames(m) <- colnames(SMD)
+SMD <- InsertRow(SMD,m[1,])
+j <- as.data.frame(StateMigrationData["Total",c("Texas.3","Vermont.3","Ohio.3","California.3","New.York.3","Florida.3","Wyoming.3","Oklahoma.3")])
+colnames(j) <- colnames(SMD)
+SMD <- InsertRow(SMD,j[1,])
+v <- as.data.frame(StateMigrationData["Total",c("Texas.4","Vermont.4","Ohio.4","California.4","New.York.4","Florida.4","Wyoming.4","Oklahoma.4")])
+colnames(v) <- colnames(SMD)
+SMD <- InsertRow(SMD,v[1,])
+for(i in 1:length(SMD)){
+  SMD[5,i] <- (SMD[5,i]-SMD[4,i])/SMD[4,i]
+  SMD[4,i] <- (SMD[4,i]-SMD[3,i])/SMD[3,i]
+  SMD[3,i] <- (SMD[3,i]-SMD[2,i])/SMD[2,i]
+  SMD[2,i] <- (SMD[2,i]-SMD[1,i])/SMD[1,i]
+}
+SMD <- SMD[2:5,]*100
+rownames(SMD) <- c("2006","2007","2008","2009")
+ND <- rbind(cbind(FinalDataM[44:63,],FinalDataS))
+rownames(ND) <- ND[,1]
+ND <- ND[,-c(1,6,9)]
+colnames(SMD) <- colnames(SGD)
+```
+General Migration Summary
+```{r echo = FALSE}
+summary(Mpercent[,c(4,7,9)])
+```
+General Migration Plot
+```{r echo = FALSE}
+plot(seq(1948,2010,1),Mpercent[,4],col=1,xlab = "Year",ylab = "Movers")
+```
+Different Country Migration Plot
+```{r echo = FALSE}
+plot(seq(1948,2010,1),Mpercent[,7],col=2,xlab = "Year",ylab = "Different Country")
+```
+Different State Migration Plot
+```{r echo = FALSE}
+plot(seq(1948,2010,1),Mpercent[,9],col=3,xlab = "Year",ylab = "Different State")
+```
+Specific Migration Summary
+```{r echo = FALSE}
+summary(Spercent[c(6,7)])
+```
+Skilled Labor Plot
+```{r echo=FALSE}
+plot(seq(1998,2017,1),Spercent[,6],col=1,xlab = "Year",ylab = "New Job")
+```
+Unskilled Labor Plot
+```{r echo=FALSE}
+plot(seq(1998,2017,1),Spercent[,7],col=2,xlab = "Year",ylab = "Looking for Work")
+```
+General Model
+```{r echo=FALSE}
+## This code creates the model for the general national data
+objfun <- function(beta,y,X) {
+  return (sum((y-X%*%beta)^2))
+}
+gradient <- function(beta,y,X) {
+  return ( as.vector(-2*t(X)%*%(y-X%*%beta)) )
+}
+y <- FinalDataM$GDPRate
+X <- model.matrix(~FinalDataM$PercentMovers+FinalDataM$DifferentCountry+FinalDataM$DifferentState,FinalDataM)
+beta0 <- runif(dim(X)[2])
+options <- list("algorithm"="NLOPT_LD_LBFGS","xtol_rel"=1.0e-6,"maxeval"=1e3)
+result <- nloptr( x0=beta0,eval_f=objfun,eval_grad_f=gradient,opts=options,y=y,X=X)
+print(result)
+```
+Unskilled Model
+```{r echo=FALSE}
+## This code creates the model for the unskilled national migration data
+objfun <- function(beta,y,X) {
+  return (sum((y-X%*%beta)^2))
+}
+gradient <- function(beta,y,X) {
+  return ( as.vector(-2*t(X)%*%(y-X%*%beta)) )
+}
+y <- ND$GDPRate
+X <- model.matrix(~ND$PercentMovers+ND$DifferentCountry+ND$DifferentState+ND$Work,ND)
+beta0 <- runif(dim(X)[2])
+options <- list("algorithm"="NLOPT_LD_LBFGS","xtol_rel"=1.0e-6,"maxeval"=1e3)
+result <- nloptr( x0=beta0,eval_f=objfun,eval_grad_f=gradient,opts=options,y=y,X=X)
+print(result)
+```
+Skilled Model
+```{r echo=FALSE}
+## This code creates the model for the skilled national migration data
+objfun <- function(beta,y,X) {
+  return (sum((y-X%*%beta)^2))
+}
+gradient <- function(beta,y,X) {
+  return ( as.vector(-2*t(X)%*%(y-X%*%beta)) )
+}
+y <- ND$GDPRate
+X <- model.matrix(~ND$PercentMovers+ND$DifferentCountry+ND$DifferentState+ND$NewJob,ND)
+beta0 <- runif(dim(X)[2])
+options <- list("algorithm"="NLOPT_LD_LBFGS","xtol_rel"=1.0e-6,"maxeval"=1e3)
+result <- nloptr( x0=beta0,eval_f=objfun,eval_grad_f=gradient,opts=options,y=y,X=X)
+print(result)
+```
+General Results
+```{r eval=FALSE, echo=TRUE}
+## This code imposes the final model and finds the deviations from the general model
+lm(FinalDataM$GDPRate~FinalDataM$PercentMovers
+   + FinalDataM$DifferentState
+   + FinalDataM$DifferentCountry
+   ,data=FinalDataM)
+stargazer(lm(FinalDataM$GDPRate~FinalDataM$PercentMovers
+   + FinalDataM$DifferentState
+   + FinalDataM$DifferentCountry
+   ,data=FinalDataM),title="General OLS")
+estTX <- lm(SGD$TX~SMD$TX)
+estVT <- lm(SGD$VT~SMD$VT)
+estOH <- lm(SGD$OH~SMD$OH)
+estCA <- lm(SGD$CA~SMD$CA)
+estNY <- lm(SGD$NY~SMD$NY)
+estFL <- lm(SGD$FL~SMD$FL)
+estWY <- lm(SGD$WY~SMD$WY)
+estOK <- lm(SGD$OK~SMD$OK)
+print(summary(estTX))
+print(summary(estVT))
+print(summary(estOH))
+print(summary(estCA))
+print(summary(estNY))
+print(summary(estFL))
+print(summary(estWY))
+print(summary(estOK))
+deviance(estTX)
+deviance(estVT)
+deviance(estOH)
+deviance(estCA)
+deviance(estNY)
+deviance(estFL)
+deviance(estWY)
+deviance(estOK)
+```
+Skilled Results
+```{r eval=FALSE, echo=TRUE}
+## This code imposes the final model and finds the deviations from the skilled national model
+lm(ND$GDPRate~ND$PercentMovers
+   + ND$NewJob
+   + ND$DifferentCountry
+   ,data=ND)
+stargazer(lm(ND$GDPRate~ND$PercentMovers
+   + ND$NewJob
+   + ND$DifferentCountry
+   ,data=ND),title="Skilled Model")
+estTX <- lm(SGD$TX~SMD$TX)
+estVT <- lm(SGD$VT~SMD$VT)
+estOH <- lm(SGD$OH~SMD$OH)
+estCA <- lm(SGD$CA~SMD$CA)
+estNY <- lm(SGD$NY~SMD$NY)
+estFL <- lm(SGD$FL~SMD$FL)
+estWY <- lm(SGD$WY~SMD$WY)
+estOK <- lm(SGD$OK~SMD$OK)
+print(summary(estTX))
+print(summary(estVT))
+print(summary(estOH))
+print(summary(estCA))
+print(summary(estNY))
+print(summary(estFL))
+print(summary(estWY))
+print(summary(estOK))
+deviance(estTX)
+deviance(estVT)
+deviance(estOH)
+deviance(estCA)
+deviance(estNY)
+deviance(estFL)
+deviance(estWY)
+deviance(estOK)
+stargazer(c(deviance(estTX),deviance(estVT),deviance(estOH),deviance(estCA),deviance(estNY),deviance(estFL),deviance(estWY),deviance(estOK)),title="Deviance")
+```
+Unskilled Results
+```{r eval=FALSE, echo=TRUE}
+## This code imposes the final model and finds the deviations from the unskilled national model
+lm(ND$GDPRate~ND$PercentMovers
+   + ND$Work
+   + ND$DifferentCountry
+   ,data=ND)
+stargazer(lm(ND$GDPRate~ND$PercentMovers
+   + ND$Work
+   + ND$DifferentCountry
+   ,data=ND),title="Unskilled Model")
+estTX <- lm(SGD$TX~SMD$TX)
+estVT <- lm(SGD$VT~SMD$VT)
+estOH <- lm(SGD$OH~SMD$OH)
+estCA <- lm(SGD$CA~SMD$CA)
+estNY <- lm(SGD$NY~SMD$NY)
+estFL <- lm(SGD$FL~SMD$FL)
+estWY <- lm(SGD$WY~SMD$WY)
+estOK <- lm(SGD$OK~SMD$OK)
+print(summary(estTX))
+print(summary(estVT))
+print(summary(estOH))
+print(summary(estCA))
+print(summary(estNY))
+print(summary(estFL))
+print(summary(estWY))
+print(summary(estOK))
+deviance(estTX)
+deviance(estVT)
+deviance(estOH)
+deviance(estCA)
+deviance(estNY)
+deviance(estFL)
+deviance(estWY)
+deviance(estOK)
+```
